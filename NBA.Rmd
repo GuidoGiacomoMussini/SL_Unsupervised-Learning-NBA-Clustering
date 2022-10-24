@@ -1,0 +1,845 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-06-22'
+editor_options: 
+  chunk_output_type: console
+---
+
+##Libraries
+```{r}
+gc()
+library(readr)
+library(readxl)
+library(stringr)
+library(dplyr)
+library(textshape)
+library(reshape2)
+library(patchwork)
+library(tidyverse)
+library(stringi)
+library(ggplot2)
+library(ggcorrplot)
+library(grid)
+library(gridExtra)
+library(factoextra)
+library(FactoMineR)
+library(corrplot)
+library(cluster)
+library(NbClust)
+library(rgl)
+library(ggpubr)
+library(GGally)
+library(ggrepel)
+
+source("C:/Users/Guido/Desktop/StatisticalLearning/SingleProject/Unsupervised/NBAFunctions.r")
+setwd("C:/Users/Guido/Desktop/StatisticalLearning/SingleProject/Unsupervised")
+```
+
+##Dataset
+```{r}
+nba <- read_delim("NBA_Dataset.csv", delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+##convert feet in m and lb in kg--------------------------------------------
+height <- c()
+weight <- c()
+theo <- c()
+
+st <-str_split(nba$height, "")
+for(i in 1: length(st))
+  {
+  height[i] <- round(0.0254*(12*as.integer(st[[i]][1]) + as.integer(st[[i]][2])),2)
+   }
+
+
+for(i in 1: length(nba$weight)) {
+  weight[i] = round(0.453592*nba$weight[i], 2) ##convert lb in kg
+}
+
+nba$weight <- weight
+nba$height <- height
+
+rm(st)
+```
+
+##Understanding the dataset
+```{r}
+head(nba)
+colnames(nba) <- tolower(colnames(nba))
+
+#player\team information--------------------------------------------------------
+#player: player name
+#age: age of the player
+#Games: games played in the season
+#win: won games
+#lost: lost game
+#min: minutes played in the season
+#weight: weight in kg
+#height: ehigt in m
+#shooting-----------------------------------------------------------------------
+#pts:avg points made per game
+#a_field_goals: attempted field goals per game
+#p_field_goals: % of made field goals over attempted per game
+#p_efg: % of effective field goals
+#p_2points: % of 2 points made per game
+#a_3points: 3 points attempted per game
+#p_3points: % of 3 points made per game
+#prop_3points: % of 3 point shot over total shot attempted per game
+#prop_2points: % of 3 point shot over total shot attempted per game
+#a_free_throws: % of free throws attempted per game
+#p_free_throws: % of free throws scored per game
+#p_true_shooting: % of true shooting per game
+#rebounds\assist\tov\steal\blocks-----------------------------------------------
+#oreb: offensive rebounds per game
+#dreb: divensive rebounds per game
+#reb: total rebounds
+#p_oreb: estimate of the percentage of available offensive rebounds a player grabbed while he was on the floor.
+#p_dreb: estimate of the percentage of available defensive rebounds a player grabbed while he was on the floor.
+#p_reb:  estimate of the percentage of availablerebounds a player grabbed while he was on the floor.
+#assist: number of assist per game
+#tov: tournover per game
+#steal: steals per game
+#blocks: blocks per game
+#fauls: fauls per game
+#advanced statistics------------------------------------------------------------
+#off_rtng: individual player's efficiency at producing points for the offense
+#def_rtng: shows how many points a player allows per 100 possession 
+#net_rtng: off-def rtng
+#plus_minus: difference in result when the player is on the floor
+#p_usage: estimate of the percentage of team plays used by a player while he was on the floor.
+```
+
+##Variables manipulation
+```{r}
+##i want analyze only the players with a sufficient number of matches played
+
+nba$totalmin <- nba$min*nba$games
+
+
+nba <- nba %>% filter(between(totalmin, quantile(nba$totalmin, 0.1), max(totalmin)+1)) 
+
+anyNA(nba) ##No NA's
+
+#-------------------------------------------------------------------------------
+
+##Set the index as players name:
+
+nba <- nba %>% remove_rownames() %>% textshape::column_to_rownames(., 1)
+
+##minutes played----------------------------------------------------------------
+# ##scaling the variables based on the minutes played:
+# for(i in 6: ncol(nba)) {
+#   for(j in 1: nrow(nba))
+#     {
+#    nba[j,i] <- round((nba[j,i]*nba$min[j]) / 48, 5)
+#   }
+# }
+nba <- nba %>% select(-c(games, min, totalmin))
+```
+
+##scaling variables
+```{r}
+##All my variables are numeric
+cl.nba <- nba #copy of the DataSet not scaled
+h.nba <- nba #copy of the DataSet not scaled
+nba <- data.frame(scale(nba, scale = TRUE, center = TRUE))
+Scl.nba <- nba
+Sh.nba <- nba
+
+summary(nba)
+```
+
+##Correlation
+```{r}
+##correlation plot
+x11()
+ggcorrplot(round(cor(nba), 2) %>% data.frame(), hc.order = TRUE, type = "lower", lab = FALSE)
+
+#-------------------------------------------------------------------------------
+##correlation standing
+corrstanding(nba, 0.85)
+#             variables               correlation
+# 1           m_field_goals points        0.99
+# 2            a_3points m_3points        0.99
+# 3    m_free_throws a_free_throws        0.99
+# 4           a_field_goals points        0.98
+# 5    a_field_goals m_field_goals        0.97
+# 6          p_true_shooting p_efg        0.97
+# 7                       reb dreb        0.97
+# 8          p_a_2points p_2points        0.95
+# 9                   p_reb p_dreb        0.95
+# 10          points m_free_throws        0.89
+# 11          m_free_throws points        0.89
+# 12             min m_field_goals        0.88
+# 13             m_field_goals min        0.88
+# 14           p_efg p_field_goals        0.88
+# 15          a_free_throws points        0.87
+# 16                  p_reb p_oreb        0.87
+# 17               p_assist assist        0.87
+# 18 p_true_shooting p_field_goals        0.86
+# 19                    tov assist        0.86
+# 20           plus_minus net_rtng        0.86
+
+```
+
+##PCA
+```{r}
+
+pca <- prcomp(nba, center = TRUE, scale = FALSE)
+var <- get_pca_var(pca)
+kdf <- data.frame(pca$x[,1:2])
+
+#Variability explained----------------------------------------------------------
+
+eig<- get_eigenvalue(pca) 
+
+x11()
+fviz_eig(pca, addlabels = TRUE)+theme_classic()
+
+cs = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+cs[2]
+x11()
+plot(cs, type="b", pch = 19,
+     xlab = "# Dimensions", ylab = "% Variability", col = "black") ##cumulative variability
+
+
+#individuals plot---------------------------------------------------------------
+
+x11()
+fviz_pca_ind(pca, col.ind = "cos2", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), repel = TRUE)
+
+
+#contribution of the first 2 components-----------------------------------------
+
+dim1<-fviz_contrib(pca,choice="var",axes=1,top=10)
+dim2<-fviz_contrib(pca,choice="var",axes=2,top=10)
+
+x11()
+grid.arrange(dim1, dim2, ncol = 2)
+
+```
+
+##KMEAN
+
+##Best K(running time: 5-6m)
+```{r}
+start.time <- Sys.time()
+#-------------------------------------------------------------------------------
+dist.type <- c("euclidean", "minkowski")
+met <- c("ward.D2", "single", "complete", "average", "mcquitty", "median", "centroid", "kmeans")
+opt.k <- c()
+k.method <- c()
+dist <- c()
+
+for(i in 1: length(dist.type)) {
+  for(j in 1:length(met)) {
+Opt <- NbClust(nba, distance=dist.type[i], min.nc=2, max.nc=10, method=met[j], index="all")
+#dist <- append(dist, dist.type[i])
+opt.k <- append(opt.k, length(levels(as.factor(Opt$Best.partition))))
+#k.method <- append(k.method, met[j])
+Opt = NULL
+ }
+}
+table(opt.k) 
+#--table;
+# opt.k
+#  2  3  6 10 
+#  4  8  2  2 
+
+#-------------------------------------------------------------------------------
+end.time <- Sys.time()
+time.taken <- round(end.time - start.time,2)
+time.taken 
+```
+
+##WSS GAP SIL(30s-1m)
+```{r}
+start.time <- Sys.time()
+#------------------------------------------------------------------------------- 
+
+#try to analyze two specific metrics: 
+#GAP:
+GaPplot <- fviz_nbclust(nba, kmeans, method= "gap_stat", k.max = 10)
+
+#WSS
+WSSplot <- fviz_nbclust(nba, kmeans, method = "wss", k.max = 10)
+
+#Silhouette
+SILplot <- fviz_nbclust(nba, kmeans, method = "silhouette", k.max=10)
+
+x11()
+GaPplot  ##suggest 4 or 8 clusters(Choose the cluster size k^ to be the smallest k such that Gap(k)≥Gap(k+1)−sk+1)
+
+x11()
+WSSplot ##suggest 3 clusters
+
+x11()
+SILplot ##suggest 3 clusters
+
+##3 seems to be the better choice
+
+#-------------------------------------------------------------------------------
+end.time <- Sys.time()
+time.taken <- round(end.time - start.time,2)
+time.taken 
+```
+
+#Plots(NB: don't run the entire chunk, but one block at a time)
+```{r}
+#Try Kmeans with 3 k
+set.seed(19)
+k.3 <- kmeans(nba, centers=3, nstart = 100) 
+k.3$size #273 133 138
+
+##VISUALSATION
+
+#cluster------------------------------------------------------------------------
+
+x11()
+fviz_cluster(k.3, data = nba, palette = "set2", geom = c("point", "text"),
+             ellipse.type = "convex", ggtheme = theme_bw(), repel = TRUE) 
+
+
+##cluster biplot-----------------------------------------------------------------------
+bidf <- data.frame(nba, "cluster" = k.3$cluster)
+
+x11()
+fviz_pca_biplot(pca, col.ind="cos2",habillage=bidf$cluster, label = "var", 
+                addEllipses=FALSE, col.var = "black")+theme_classic()
+
+```
+
+##Result Analysis 
+```{r}
+cl.nba$cluster <- k.3$cluster
+Kclus <- data.frame(aggregate(cl.nba, list(cl.nba$cluster), FUN=mean))
+Kclus$cluster <- as.factor(Kclus$cluster)
+
+#-------------------------------------------------------------------------------
+age <- ggplot(Kclus, aes(cluster, age, fill = cluster) )+ 
+  geom_bar(stat ="identity")+
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "age")+ theme_classic()
+
+weight <- ggplot(Kclus, aes(cluster, weight, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "weight")+ theme_classic()
+
+height <- ggplot(Kclus, aes(cluster, height, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "height")+ theme_classic()
+#points
+points <- ggplot(Kclus, aes(cluster, points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "points")+ theme_classic()
+
+a_field_goals <- ggplot(Kclus, aes(cluster, a_field_goals, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attempted field goals")+ theme_classic()
+
+p_field_goals <- ggplot(Kclus, aes(cluster, p_field_goals, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of field goals")+ theme_classic()
+
+p_efg <- ggplot(Kclus, aes(cluster, p_efg, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% efg")+ theme_classic()
+
+p_2points <- ggplot(Kclus, aes(cluster, p_2points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% 2points")+ theme_classic()
+
+a_3points <- ggplot(Kclus, aes(cluster, a_3points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attempted 3points")+ theme_classic()
+
+p_3points <- ggplot(Kclus, aes(cluster, p_3points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of 3points")+ theme_classic()
+
+prop_2p <- ggplot(Kclus, aes(cluster, prop_2p, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "propensity 2points")+ theme_classic()
+
+prop_3p <- ggplot(Kclus, aes(cluster, prop_3p, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "propensity 3points")+ theme_classic()
+
+a_free_throws <- ggplot(Kclus, aes(cluster, a_free_throws, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attemted free throws")+ theme_classic()
+
+p_free_throws <- ggplot(Kclus, aes(cluster, p_free_throws, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% free throws")+ theme_classic()
+
+p_free_shooting <- ggplot(Kclus, aes(cluster, p_true_shooting, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% true shooting")+ theme_classic()
+
+oreb <- ggplot(Kclus, aes(cluster, oreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "offensive rebounds")+ theme_classic()
+
+dreb <- ggplot(Kclus, aes(cluster, dreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "defensive rebounds")+ theme_classic()
+
+reb <- ggplot(Kclus, aes(cluster, reb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "rebounds")+ theme_classic()
+
+p_reb <- ggplot(Kclus, aes(cluster, p_reb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of rebounds")+ theme_classic()
+
+p_dreb <- ggplot(Kclus, aes(cluster, p_dreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of defensive rebounds")+ theme_classic()
+
+p_oreb <- ggplot(Kclus, aes(cluster, p_oreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of offensive rebounds")+ theme_classic()
+
+assist <- ggplot(Kclus, aes(cluster, assist, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "assist")+ theme_classic()
+
+tov <- ggplot(Kclus, aes(cluster, tov, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "tournovers")+ theme_classic()
+
+steal <- ggplot(Kclus, aes(cluster, steal, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "steals")+ theme_classic()
+
+blocks <- ggplot(Kclus, aes(cluster, blocks, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "blocks")+ theme_classic()
+
+fauls <- ggplot(Kclus, aes(cluster, fauls, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "fouls")+ theme_classic()
+
+off_rtng <- ggplot(Kclus, aes(cluster, off_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "offensive rating")+ theme_classic()
+
+def_rtng <- ggplot(Kclus, aes(cluster, def_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "defensive rating")+ theme_classic()
+
+net_rtng <- ggplot(Kclus, aes(cluster, net_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "net rating")+ theme_classic()
+
+plus_minus <- ggplot(Kclus, aes(cluster, plus_minus, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "plus_minus")+ theme_classic()
+
+p_usage<- ggplot(Kclus, aes(cluster, p_usage, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+  scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% usage")+ theme_classic()
+
+x11()
+grid.arrange(age, weight, height, points, oreb, dreb,  reb,  assist, tov, steal, blocks, fauls, a_field_goals, p_field_goals, p_efg, p_2points, ncol = 4) 
+
+x11()
+grid.arrange(a_3points, p_3points, a_free_throws, p_free_throws, p_dreb, p_free_shooting , p_reb, p_oreb, off_rtng, def_rtng, net_rtng, plus_minus, p_usage, prop_2p, prop_3p, ncol = 4)
+
+rm(age, weight, height, points, oreb, dreb,  reb,  assist, tov, steal, blocks, fauls, a_field_goals, p_field_goals, p_efg, p_2points, 
+   a_3points, p_3points, a_free_throws, p_free_throws, p_dreb, p_free_shooting , p_reb, p_oreb, off_rtng, def_rtng, net_rtng, plus_minus, p_usage, prop_2p, prop_3p)
+```
+
+##Hierarchical Clustering
+```{r}
+d=dist(nba, method= "euclidean")
+  
+fit.ward=hclust(d, method="ward.D2")
+
+fit.single=hclust(d, method="single")
+ 
+fit.complete=hclust(d, method="complete")
+  
+fit.average=hclust(d, method="average")
+
+k = 3
+x11()
+par(mfrow = c(2,2))
+plot(fit.average)
+rect.hclust(fit.average, k=k)
+plot(fit.single)
+rect.hclust(fit.single, k=k)
+plot(fit.complete)
+rect.hclust(fit.complete, k=k)
+plot(fit.ward)
+rect.hclust(fit.ward, k=k) 
+```
+
+#plots
+```{r}
+avvelenata<- cutree(fit.ward, k = k)
+##Reorder the clusters to make them comparable with k mean
+for(i in 1:length(avvelenata)) {
+  if(avvelenata[i] == 2)  {avvelenata[i] <- 1}
+  else if(avvelenata[i] == 1)  {avvelenata[i] <- 2}
+}
+h.nba$cluster <- avvelenata
+Hclus <- data.frame(aggregate(h.nba, list(h.nba$cluster), FUN=mean))
+Hclus$cluster <-as.factor(Hclus$cluster)
+#-------------------------------------------------------------------------------
+
+  age <- ggplot(Hclus, aes(cluster, age, fill = cluster) )+ 
+  geom_bar(stat ="identity")+
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "age")+ theme_classic()
+
+weight <- ggplot(Hclus, aes(cluster, weight, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "weight")+ theme_classic()
+
+height <- ggplot(Hclus, aes(cluster, height, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "height")+ theme_classic()
+#points
+points <- ggplot(Hclus, aes(cluster, points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "points")+ theme_classic()
+
+a_field_goals <- ggplot(Hclus, aes(cluster, a_field_goals, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attempted field goals")+ theme_classic()
+
+p_field_goals <- ggplot(Hclus, aes(cluster, p_field_goals, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of field goals")+ theme_classic()
+
+p_efg <- ggplot(Hclus, aes(cluster, p_efg, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% efg")+ theme_classic()
+
+p_2points <- ggplot(Hclus, aes(cluster, p_2points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% 2points")+ theme_classic()
+
+a_3points <- ggplot(Hclus, aes(cluster, a_3points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attempted 3points")+ theme_classic()
+
+p_3points <- ggplot(Hclus, aes(cluster, p_3points, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of 3points")+ theme_classic()
+
+prop_2p <- ggplot(Hclus, aes(cluster, prop_2p, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "propensity 2points")+ theme_classic()
+
+prop_3p <- ggplot(Hclus, aes(cluster, prop_3p, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "propensity 3points")+ theme_classic()
+
+a_free_throws <- ggplot(Hclus, aes(cluster, a_free_throws, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "attemted free throws")+ theme_classic()
+
+p_free_throws <- ggplot(Hclus, aes(cluster, p_free_throws, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% free throws")+ theme_classic()
+
+p_free_shooting <- ggplot(Hclus, aes(cluster, p_true_shooting, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% true shooting")+ theme_classic()
+
+oreb <- ggplot(Hclus, aes(cluster, oreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "offensive rebounds")+ theme_classic()
+
+dreb <- ggplot(Hclus, aes(cluster, dreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "defensive rebounds")+ theme_classic()
+
+reb <- ggplot(Hclus, aes(cluster, reb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "rebounds")+ theme_classic()
+
+p_reb <- ggplot(Hclus, aes(cluster, p_reb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of rebounds")+ theme_classic()
+
+p_dreb <- ggplot(Hclus, aes(cluster, p_dreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of defensive rebounds")+ theme_classic()
+
+p_oreb <- ggplot(Hclus, aes(cluster, p_oreb, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% of offensive rebounds")+ theme_classic()
+
+assist <- ggplot(Hclus, aes(cluster, assist, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "assist")+ theme_classic()
+
+tov <- ggplot(Hclus, aes(cluster, tov, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "tournovers")+ theme_classic()
+
+steal <- ggplot(Hclus, aes(cluster, steal, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "steals")+ theme_classic()
+
+blocks <- ggplot(Hclus, aes(cluster, blocks, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "blocks")+ theme_classic()
+
+fauls <- ggplot(Hclus, aes(cluster, fauls, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "fouls")+ theme_classic()
+
+off_rtng <- ggplot(Hclus, aes(cluster, off_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "offensive rating")+ theme_classic()
+
+def_rtng <- ggplot(Hclus, aes(cluster, def_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "defensive rating")+ theme_classic()
+
+net_rtng <- ggplot(Hclus, aes(cluster, net_rtng, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "net rating")+ theme_classic()
+
+plus_minus <- ggplot(Hclus, aes(cluster, plus_minus, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "plus_minus")+ theme_classic()
+
+p_usage<- ggplot(Hclus, aes(cluster, p_usage, fill = cluster) )+ 
+  geom_bar(stat ="identity")+ 
+  scale_fill_manual( values=c("#E41A1C", "#4DAF4A", "#377EB8"))+
+  xlab("")+ylab("")+labs(title = "% usage")+ theme_classic()
+
+
+x11()
+grid.arrange(age, weight, height, points, oreb, dreb,  reb,  assist, tov, steal, blocks, fauls, a_field_goals, p_field_goals, p_efg, p_2points, ncol = 4) 
+
+x11()
+grid.arrange(a_3points, p_3points, a_free_throws, p_free_throws, p_dreb, p_free_shooting , p_reb, p_oreb, off_rtng, def_rtng, net_rtng, plus_minus, p_usage, prop_2p, prop_3p, ncol = 4)
+
+rm(age, weight, height, points, oreb, dreb,  reb,  assist, tov, steal, blocks, fauls, a_field_goals, p_field_goals, p_efg, p_2points, 
+   a_3points, p_3points, a_free_throws, p_free_throws, p_dreb, p_free_shooting , p_reb, p_oreb, off_rtng, def_rtng, net_rtng, plus_minus, p_usage, prop_2p, prop_3p)
+```
+
+##compared results
+```{r}
+kdf$clusterK <- as.factor(k.3$cluster)
+kdf$clusterH <- as.factor(avvelenata)
+
+
+hscar<- ggplot(kdf, aes(PC1, PC2, color=clusterH))+geom_point(shape = 16)+
+scale_color_manual( values=c( "#E41A1C", "#4DAF4A", "#377EB8"))+
+  labs(title = "Kmeans", colour = "Clusters")+ theme_classic()+
+  geom_text_repel(label=rownames(kdf))
+
+kscar<- ggplot(kdf, aes(PC1, PC2, color=clusterK))+geom_point(shape = 16)+
+scale_color_manual( values=c( "#E41A1C", "#4DAF4A", "#377EB8"))+ 
+  labs(title = "Hierarchical", color = "Clusters")+ theme_classic()+
+  geom_text_repel(label=rownames(kdf))
+
+x11()
+grid.arrange(hscar, kscar, ncol = 1)
+rm(hscar, kscar)
+
+##Cross Matrix------------------------------------------------------------------
+
+kmea <- c( "K_1", "K_2", "K_2")
+hier <- c("H_1","H_2","H_3")
+mat <- matrix(0: 0, nrow = 3, ncol = 3)
+colnames(mat) <- kmea
+rownames(mat) <- hier
+clusterH <-as.integer(kdf$clusterK)
+clusterK<- as.integer(kdf$clusterH)
+
+h1k1 <- ifelse(clusterH == 1 & clusterK ==1, 1, 0 ) 
+h2k2 <- ifelse(clusterH == 2 & clusterK ==2, 1, 0 ) 
+h3k3 <- ifelse(clusterH == 3 & clusterK ==3, 1, 0 ) 
+h1k2 <- ifelse(clusterH == 1 & clusterK ==2, 1, 0 ) 
+h2k1 <- ifelse(clusterH == 2 & clusterK ==1, 1, 0 ) 
+h1k3 <- ifelse(clusterH == 1 & clusterK ==3, 1, 0 ) 
+h3k1 <- ifelse(clusterH == 3 & clusterK ==1, 1, 0 ) 
+h2k3 <- ifelse(clusterH == 2 & clusterK ==3, 1, 0 )
+h3k2 <- ifelse(clusterH == 3 & clusterK ==2, 1, 0 ) 
+
+mat[1,1] <- sum(h1k1)
+mat[2,2] <- sum(h2k2)
+mat[3,3] <- sum(h3k3)
+mat[1,2] <- sum(h1k2)
+mat[2,1] <- sum(h2k1)
+mat[1,3] <- sum(h1k3)
+mat[3,1] <- sum(h3k1)
+mat[2,3] <- sum(h2k3)
+mat[3,2] <- sum(h3k2)
+
+mat
+
+```
+
+#Differences between cluster
+```{r}
+#Inter differences--------------------------------------------------------------
+
+##Dataframe with the variables scaled
+Sh.nba$cluster <- avvelenata
+SHclus <- data.frame(aggregate(Sh.nba, list(Sh.nba$cluster), FUN=mean))
+SHclus$cluster <-as.factor(SHclus$cluster)
+
+Scl.nba$cluster <- k.3$cluster
+SKclus <- data.frame(aggregate(Scl.nba, list(Scl.nba$cluster), FUN=mean))
+SKclus$cluster <- as.factor(SKclus$cluster)
+
+#cl1
+ref1 <-( SKclus[1,-33] + SHclus[1,-33] ) /2
+k1val <- t(SKclus[1,-33]- ref1)
+h1val <- t(SHclus[1,-33]- ref1)
+
+cl1K <- data.frame("val" = k1val, "algorithm" = c('K'), "var" = colnames(Kclus)[-33])
+cl1H <- data.frame("val" = h1val, "algorithm" = c('H'),  "var" = colnames(Hclus)[-33])
+cl1 <- rbind(cl1K[-1,], cl1H[-1,])
+
+#cl2
+ref2 <-( SKclus[2,-33] + SHclus[2,-33] ) /2
+k2val <- t(SKclus[2,-33]- ref2)
+h2val <- t(SHclus[2,-33]- ref2)
+
+cl2K <- data.frame("val" = k2val, "algorithm" = c('K'), "var" = colnames(SKclus)[-33])
+cl2H <- data.frame("val" = h2val, "algorithm" = c('H'),  "var" = colnames(SHclus)[-33])
+cl2 <- rbind(cl2K[-1,], cl2H[-1,])
+
+#cl3
+ref3 <-( SKclus[3,-33] + SHclus[3,-33] ) /2
+k3val <- t(SKclus[3,-33]- ref3)
+h3val <- t(SHclus[3,-33]- ref3)
+
+cl3K <- data.frame("val" = k3val, "algorithm" = c('K'), "var" = colnames(SKclus)[-33])
+cl3H <- data.frame("val" = h3val, "algorithm" = c('H'),  "var" = colnames(SHclus)[-33])
+cl3 <- rbind(cl3K[-1,], cl3H[-1,])
+
+
+#plots
+clplot1 <- ggplot(data=cl1, aes(x=var, y=X1, fill=algorithm)) +
+geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ylab("Red Cluster")+ xlab("")+
+  theme(panel.background = element_rect(fill = '#ffcccc'),  panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank())+ coord_flip()
+
+clplot2 <- ggplot(data=cl2, aes(x=var, y=X2, fill=algorithm)) +
+geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ylab("Green Cluster")+ xlab("")+
+  theme(panel.background = element_rect(fill = '#d6f5d6'),  panel.grid.major.x = element_blank(),
+      panel.grid.minor.x  = element_blank())+ coord_flip()
+
+clplot3 <- ggplot(data=cl3, aes(x=var, y=X3, fill=algorithm)) +
+geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+ylab("Blue Cluster")+ xlab("")+
+  theme(panel.background = element_rect(fill = '#ccd9ff'),  panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank())+ coord_flip()
+
+x11()
+grid.arrange(clplot1, clplot2, clplot3, ncol = 3)
+```
+
+##K mean class differences
+```{r}
+#Intra-range--------------------------------------------------------------------
+Krange <- sapply(SKclus[,-33], function(x) max(x) - min(x))
+Krange <- Krange[-1]
+Hrange <- sapply(SHclus[,-33], function(x) max(x) - min(x))
+Hrange <- Hrange[-1]
+coln <- colnames(SKclus)[-33]
+
+plotrange <- data.frame("Kmeans" = as.numeric(t(Krange)), "Hierarchical" = as.numeric(t(Hrange)), "var" = coln[-1] )
+
+#Kmeans-------------------------------------------------------------------------
+Kcutoff<-quantile(plotrange$Kmeans, .75)
+
+
+Kplot <- ggplot(data=plotrange, aes(x=var, y=Kmeans)) +
+ geom_bar(stat="identity", position=position_dodge(), aes(fill  = Kmeans > Kcutoff ) )+
+    theme(legend.position="none") +
+   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  xlab("")+ ylab("")+labs(title = "Kmeans Intra-Cluster Range")+
+  theme(panel.background = element_rect(fill = '#ffffff'), panel.grid.major= element_blank(), panel.grid.minor= element_blank(), plot.title = element_text(hjust = 0.9) )+
+  coord_flip()+  scale_y_reverse()
+
+#Hmeans-------------------------------------------------------------------------
+Hcutoff<-quantile(plotrange$Hierarchical, .75)
+
+
+Hplot <- ggplot(data=plotrange, aes(x=var, y=Hierarchical)) +
+ geom_bar(stat="identity", position=position_dodge(), aes(fill  = Hierarchical > Hcutoff ) )+
+    theme(legend.position="none") +
+   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  xlab("")+ ylab("")+labs(title = " Hierarchical Intra-Cluster Range")+
+  theme(panel.background = element_rect(fill = '#ffffff'), panel.grid.major= element_blank(), panel.grid.minor= element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.title = element_text(hjust = 0.1) )+
+  coord_flip()
+
+x11()
+grid.arrange(Kplot, Hplot, ncol=2)
+
+```
